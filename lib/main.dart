@@ -8,7 +8,7 @@ import 'package:material_design_icons_flutter/material_design_icons_flutter.dart
 import 'package:qr_flutter/qr_flutter.dart';
 
 const String baseApiUrl = "https://kiosk-worker.0mugunthanruthreshwaran.workers.dev";
-const String basePageUrl = "https://dttkiosk.pages.dev";
+const String basePageUrl = "https://dtt-kiosk.pages.dev";
 
 final currency = NumberFormat.currency(
   locale: 'en_SG',
@@ -32,25 +32,53 @@ void main() {
   );
 }
 
+class Addon {
+  final String id;
+  final String name;
+  final int price; // cents
+  final bool isRequired;
+  final int maxSelect;
+
+  Addon({
+    required this.id,
+    required this.name,
+    required this.price,
+    required this.isRequired,
+    required this.maxSelect,
+  });
+
+  factory Addon.fromJson(Map<String, dynamic> json) {
+    return Addon(
+      id: json["id"],
+      name: json["name"],
+      price: json["price"],
+      isRequired: json["is_required"] ?? false,
+      maxSelect: json["max_select"] ?? 1,
+    );
+  }
+}
+
 class MenuItem {
   final String id;
   final String name;
   final String description;
-  final double price;
-  final String vendorId;
-  final String vendorName;
+  final int price; // cents
   final String imageUrl;
   final List<String> tags;
+  final List<Addon> addons;
+  final bool isFeatured;
+  final bool isAvailable;
 
   MenuItem({
     required this.id,
     required this.name,
     required this.description,
     required this.price,
-    required this.vendorId,
-    required this.vendorName,
     required this.imageUrl,
     required this.tags,
+    required this.addons,
+    required this.isFeatured,
+    required this.isAvailable,
   });
 
   factory MenuItem.fromJson(Map<String, dynamic> json) {
@@ -58,23 +86,44 @@ class MenuItem {
       id: json["id"],
       name: json["name"],
       description: json["description"] ?? "",
-      price: (json["price"] as num).toDouble() / 100,
-      vendorId: json["vendor_id"],
-      vendorName: json["vendor_name"],
-      imageUrl: json["image_url"] ?? "",
-      tags: (json["tags"] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [],
+      price: (json["price"] as int),
+      imageUrl: json["imageUrl"] ?? "",
+      tags: (json["tags"] as List?)
+          ?.map((e) => e.toString().toLowerCase())
+          .toList() ??
+      [],
+      addons: (json["addons"] as List?)
+              ?.map((a) => Addon.fromJson(a))
+              .toList() ??
+          [],
+      isFeatured: json["isFeatured"] ?? true,
+      isAvailable: json["isAvailable"] ?? true,
     );
   }
 }
 
 class CartItem {
   final MenuItem item;
+  final List<Addon> selectedAddons;
   int quantity;
 
-  CartItem(this.item, {this.quantity = 1});
+  CartItem({
+    required this.item,
+    this.selectedAddons = const [],
+    this.quantity = 1,
+  });
 
-  double get unitPrice => item.price;
-  double get totalPrice => unitPrice * quantity;
+  int get unitPriceCents {
+    final addonTotal = selectedAddons.fold<int>(
+      0,
+      (sum, a) => sum + a.price,
+    );
+
+    return item.price + addonTotal;
+  }
+  double get unitPrice => unitPriceCents / 100;
+  int get totalPriceCents => unitPriceCents * quantity;
+  double get totalPrice => totalPriceCents / 100;
 }
 
 class AppState extends ChangeNotifier {
@@ -139,7 +188,7 @@ class AppState extends ChangeNotifier {
     isLoading = true;
     notifyListeners();
 
-    final response = await http.get(Uri.parse("$baseApiUrl/meal"));
+    final response = await http.get(Uri.parse("$baseApiUrl/api/menu"));
 
     if (response.statusCode != 200) {
       isLoading = false;
@@ -161,7 +210,7 @@ class AppState extends ChangeNotifier {
     if (existing.isNotEmpty) {
       existing.first.quantity++;
     } else {
-      cart.add(CartItem(item));
+      cart.add(CartItem(item: item));
     }
 
     notifyListeners();
@@ -293,7 +342,9 @@ class _MenuPageUI extends StatelessWidget {
       child: Row(
         children: [
           ...mealTypes.map((type) {
-            final count = state.menu.where((m) => m.tags.contains(type)).length;
+            final count = state.menu.where(
+              (m) => m.tags.map((t) => t.toLowerCase()).contains(type.toLowerCase())
+            ).length;
             return Padding(
               padding: const EdgeInsets.only(right: 8),
               child: ChoiceChip(
@@ -348,7 +399,7 @@ class _MenuPageUI extends StatelessWidget {
 
     if (state.menu.isEmpty) return const SizedBox();
 
-    final featuredMeals = state.menu.take(8).toList();
+    final featuredMeals = state.menu.where((item) => item.isFeatured == true).toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -434,7 +485,7 @@ class _MenuPageUI extends StatelessWidget {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
-                        currency.format(meal.price),
+                        currency.format(meal.price/100),
                         style: const TextStyle(
                           fontWeight: FontWeight.w600,
                           fontSize: 13,
@@ -466,6 +517,63 @@ class _MenuPageUI extends StatelessWidget {
     );
   }
  
+  void _showAddonDialog(BuildContext context, CartItem cartItem) {
+    final state = context.read<AppState>();
+    final selected = List<Addon>.from(cartItem.selectedAddons);
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text("Customize ${cartItem.item.name}"),
+          content: StatefulBuilder(
+            builder: (context, setState) {
+              return SingleChildScrollView(
+                child: Column(
+                  children: cartItem.item.addons.map((addon) {
+                    final isSelected =
+                        selected.any((a) => a.id == addon.id);
+
+                    return CheckboxListTile(
+                      value: isSelected,
+                      title: Text(
+                          "${addon.name} (${currency.format(addon.price / 100)})"),
+                      onChanged: (_) {
+                        setState(() {
+                          if (isSelected) {
+                            selected.removeWhere(
+                                (a) => a.id == addon.id);
+                          } else {
+                            selected.add(addon);
+                          }
+                        });
+                      },
+                    );
+                  }).toList(),
+                ),
+              );
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("Cancel"),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                cartItem.selectedAddons.clear();
+                cartItem.selectedAddons.addAll(selected);
+                state.notifyListeners();
+                Navigator.pop(context);
+              },
+              child: const Text("Apply"),
+            )
+          ],
+        );
+      },
+    );
+  }
+  
   Widget _buildCartPanel(BuildContext context) {
     final state = context.watch<AppState>();
 
@@ -505,16 +613,22 @@ class _MenuPageUI extends StatelessWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              cartItem.item.name,
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.w600),
-                            ),
-                            Text(
-                              cartItem.item.vendorName,
-                              style: TextStyle(
-                                  color: Colors.grey[600],
-                                  fontSize: 12),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    cartItem.item.name,
+                                    style: const TextStyle(fontWeight: FontWeight.w600),
+                                  ),
+                                ),
+                                if (cartItem.item.addons.isNotEmpty)
+                                  IconButton(
+                                    icon: const Icon(Icons.settings, size: 20),
+                                    onPressed: () {
+                                      _showAddonDialog(context, cartItem);
+                                    },
+                                  )
+                              ],
                             ),
 
                             const SizedBox(height: 8),
@@ -764,7 +878,7 @@ class _MenuPageUI extends StatelessWidget {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
-                        currency.format(meal.price),
+                        currency.format(meal.price/100),
                         style: const TextStyle(
                           fontWeight: FontWeight.w600,
                         ),
@@ -1250,19 +1364,20 @@ class _CompletionPageState extends State<CompletionPage> {
 
     try {
       final response = await http.post(
-        Uri.parse("$baseApiUrl/order"),
+        Uri.parse("$baseApiUrl/api/orders"),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
           "items": state.cart.map((c) => {
-                "id": c.item.id,
-                "name": c.item.name,
-                "quantity": c.quantity,
-                "unit_price": (c.unitPrice * 100).toInt(),
-              }).toList()
+            "mealId": c.item.id,
+            "quantity": c.quantity,
+            "addons": c.selectedAddons.map((a) => a.id).toList()
+          }).toList(),
+          "tax": (state.tax * 100).toInt(),
         }),
       );
+      
 
-      if (response.statusCode != 200) {
+      if (response.statusCode != 201) {
         throw Exception("Failed to create order");
       }
 
@@ -1278,18 +1393,6 @@ class _CompletionPageState extends State<CompletionPage> {
         loading = false;
       });
     }
-  }
-
-  Widget buildQRCode() {
-    if (orderId == null) return SizedBox();
-
-    final trackUrl = "$basePageUrl/track?id=$orderId";
-
-    return QrImageView(
-      data: trackUrl,
-      version: QrVersions.auto,
-      size: 200,
-    );
   }
 
   void startCountdown() {
@@ -1334,8 +1437,7 @@ class _CompletionPageState extends State<CompletionPage> {
       );
     }
 
-    //final trackingUrl = "$basePageUrl/track?id=$orderId";
-    final trackingUrl = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+    final trackingUrl = "$basePageUrl/receipt?id=$orderId";
 
     return Scaffold(
       body: Center(
